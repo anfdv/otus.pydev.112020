@@ -10,23 +10,24 @@ import logging
 from collections import namedtuple
 
 
-logger = logging.getLogger()
-
-config = {
-	"REPORT_SIZE": 1000,
-	"REPORT_DIR": 'reports',
-	"ERROR_THRESHOLD": 20,
-	"LOG_DIR": 'log',
-	"LOGGER_FILE": None
-}
-
-
 def load_config(file):
-	assert os.path.exists(file), f"файл {file} не найден"
+	default = {
+		"REPORT_SIZE": 1000,
+		"REPORT_DIR": 'reports',
+		"ERROR_THRESHOLD": 20,
+		"LOG_DIR": 'log',
+		"LOGGER_FILE": None
+	}
+	
+	if not os.path.exists(file):
+		raise FileNotFoundError(f"файл {file} не найден")
+	
 	with open(file) as f:
-		data = f.read()
-	assert data, 'пустой конфиг'
-	return json.loads(data)
+		data = json.load(f)
+		
+	default.update(data)
+	
+	return default
 
 
 def load_args():
@@ -47,10 +48,6 @@ def set_logger(file):
 		format='[%(asctime)s] %(levelname).1s %(message)s',
 		datefmt='%Y.%m.%d %H:%M:%S'
 	)
-
-
-
-
 
 
 class LineParser:
@@ -90,23 +87,21 @@ class NginxReport:
 		self.total = {'count': 0, 'time': 0}
 		self.errors = 0
 		self.error_threshold = self.config['ERROR_THRESHOLD']
-		self.load_html_template()
+		
+		with open('report.html', 'r') as f:
+			self.html_template = Template(f.read())
 	
 	def error_report(self):
 		current = self.errors / self.total['count'] * 100
 		if current > self.error_threshold:
-			logger.error(f"errors in log: {self.errors}, {current}%")
+			logging.error(f"errors in log: {self.errors}, {current}%")
 	
 	def is_url_exist(self, url):
 		if url not in self.data:
 			self.data[url] = list()
-	
-	def load_html_template(self):
-		with open('report.html', 'r') as f:
-			self.html_template = Template(f.read())
-	
-	def make_html(self):
-		table_json = list()
+
+	def data_table(self):
+		table = list()
 		for url, time_list in iter(self.data.items()):
 			time_sum = round(sum(time_list), 3)
 			if time_sum <= self.config['REPORT_SIZE']:
@@ -123,20 +118,15 @@ class NginxReport:
 				'time_max': time_max,
 				'time_med': round(statistics.median(time_list), 3),
 			}
-			table_json.append(tr)
-		report_day = self.day.strftime('%Y.%m.%d')
-		report_path = os.path.join(self.config['REPORT_DIR'], f"report-{report_day}.html")
+			table.append(tr)
+		return table
+	
+	def make_html(self, table):
+		report_path = os.path.join(self.config['REPORT_DIR'], f"report-{self.day.strftime('%Y.%m.%d')}.html")
 		
 		with open(report_path, 'w', encoding='utf-8') as f:
-			f.write(self.html_template.safe_substitute(table_json=json.dumps(table_json)))
+			f.write(self.html_template.safe_substitute(table_json=json.dumps(table)))
 		
-		self.error_report()
-
-
-LastLog = namedtuple('LastLog', ('file', 'dt'))
-
-
-
 
 # log_format ui_short '$remote_addr  $remote_user $http_x_real_ip [$time_local] "$request" '
 #                     '$status $body_bytes_sent "$http_referer" '
@@ -144,7 +134,7 @@ LastLog = namedtuple('LastLog', ('file', 'dt'))
 #                     '$request_time';
 
 
-log_format = (
+LOG_FORMAT = (
 	'remote_addr', 'remote_user', 'http_x_real_ip', 'time_local', 'request',
 	'status', 'body_bytes_sent', 'http_referer',
 	'http_user_agent', 'http_x_forwarded_for', 'http_X_REQUEST_ID', 'http_X_RB_USER',
@@ -152,14 +142,12 @@ log_format = (
 )
 
 RULES = {
-	'SPACE': ('\s+', lambda x: '_IGNORE_'),
-	'NO_DATA': ('-|"-"', lambda x: None),
-	'QUOTED_STRING': ('"([^"]+)"', lambda x: x.group(1)),
-	'DATE': ('\[([^\]]+)\]', lambda x: datetime.strptime(x.group(1), '%d/%b/%Y:%H:%M:%S %z')),
-	'RAW': ('([^\s]+)', lambda x: x.group(1)),
+	'SPACE': (r'\s+', lambda x: '_IGNORE_'),
+	'NO_DATA': (r'-|"-"', lambda x: None),
+	'QUOTED_STRING': (r'"([^"]+)"', lambda x: x.group(1)),
+	'DATE': (r'\[([^\]]+)\]', lambda x: datetime.strptime(x.group(1), '%d/%b/%Y:%H:%M:%S %z')),
+	'RAW': (r'([^\s]+)', lambda x: x.group(1)),
 }
-
-line_parser = LineParser(RULES, log_format)
 
 
 def file_data(name):
@@ -169,71 +157,80 @@ def file_data(name):
 		return open(name, 'rb')
 
 
-def last_log():
-	pattern = r'nginx-access-ui.log-\d{8}(\.gz|)\Z'
-	
+LastLog = namedtuple('LastLog', ('file', 'dt'))
+
+
+def last_log(path):
+	pattern = r'nginx-access-ui.log-(\d{8})(\.gz|)\Z'
 	last = None
-	for name in iter(os.listdir(config['LOG_DIR'])):
+	
+	for name in iter(os.listdir(path)):
 		matched = re.compile(pattern).match(name)
 		if matched is not None:
-			file_dt = datetime.strptime(os.path.split(name)[1].split('.')[1].split('-')[1], '%Y%m%d')
+			file_dt = datetime.strptime(matched.group(1), '%Y%m%d')
 			if last is None or last.dt < file_dt:
-				last = LastLog(os.path.join(config['LOG_DIR'], name), file_dt)
+				last = LastLog(os.path.join(path, name), file_dt)
 	
-	if last is not None:
-		old_reports = list()
-		for name in iter(os.listdir(config['REPORT_DIR'])):
-			rep_dt = datetime.strptime(''.join(name.split('-')[1].split('.')[:-1]), '%Y%m%d')
-			old_reports.append(rep_dt)
-		
-		if last.dt in old_reports:
-			logger.info(f"found report for day {last.dt}, skipping")
-		else:
-			return last
-
-
+	return last
+	
 
 def main(args):
-	config.update(load_config(args.config))
-	set_logger(config['LOGGER_FILE'])
-
-	assert os.path.exists(config['LOG_DIR']), f"папка {config['LOG_DIR']} не существует"
-	os.makedirs(config['REPORT_DIR'], exist_ok=True)
+	conf = load_config(args.config)
+	set_logger(conf['LOGGER_FILE'])
+	logging.info(f"nginx reporter config: {json.dumps(conf)}")
 	
-	logger.info(f"nginx reporter config: {json.dumps(config)}")
+	if not os.path.exists(conf['LOG_DIR']):
+		raise FileNotFoundError(f"папка {conf['LOG_DIR']} не существует")
 	
-	log = last_log()
+	os.makedirs(conf['REPORT_DIR'], exist_ok=True)
 	
-	if log is not None:
-		report = NginxReport(log.dt, config)
+	log = last_log(conf['LOG_DIR'])
+	if log is None:
+		logging.info(f"nginx log not found")
+		return
 		
-		for item in file_data(log.file):
-			report.total['count'] += 1
-			try:
-				line = line_parser.parse(item.decode('utf-8', 'backslashreplace'))
-			except Exception:
-				logger.error('line not parsed', exc_info=True)
-				report.errors += 1
-				continue
-			is_request = re.compile("\w+.*/")
-			if is_request.match(line['request']) is not None:
-				req_url = line['request'].split()[1]
-				req_time = float(line['request_time'])
-				
-				report.total['time'] += req_time
-				
-				report.is_url_exist(req_url)
-				report.data[req_url].append(req_time)
-			else:
-				logger.error(f"URL not specified, request: {line['request']}")
-				report.errors += 1
+	old_report_file = os.path.join(
+		conf['REPORT_DIR'],
+		f"report-{log.dt.strftime('%Y.%m.%d')}.html"
+	)
+	if os.path.exists(old_report_file):
+		logging.info(f"found report for day {log.dt}, skipping")
+		return
+	
+	line_parser = LineParser(RULES, LOG_FORMAT)
+	report = NginxReport(log.dt, conf)
+	
+	for item in file_data(log.file):
+		report.total['count'] += 1
 		
-		report.make_html()
+		try:
+			line = line_parser.parse(item.decode('utf-8', 'backslashreplace'))
+		except Exception:
+			logging.error('line not parsed', exc_info=True)
+			report.errors += 1
+			continue
+			
+		is_request = re.compile(r"\w+.*/")
+		if is_request.match(line['request']) is not None:
+			req_url = line['request'].split()[1]
+			req_time = float(line['request_time'])
+			
+			report.total['time'] += req_time
+			
+			report.is_url_exist(req_url)
+			report.data[req_url].append(req_time)
+		else:
+			logging.error(f"URL not specified, request: {line['request']}")
+			report.errors += 1
+			
+	data_table = report.data_table()
+	report.make_html(data_table)
+	report.error_report()
 
 
 if __name__ == "__main__":
-	args = load_args()
+	sys_args = load_args()
 	try:
-		main(args)
+		main(sys_args)
 	except:
-		logger.exception('analyzer exited', exc_info=True)
+		logging.exception('analyzer exited', exc_info=True)
