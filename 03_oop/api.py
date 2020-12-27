@@ -118,7 +118,7 @@ class NameField(CharField):
 		validation = super(self.__class__, self).validate(value)
 
 		if not isinstance(value, str):
-			validation.append(f"{self.name} должен быть строкой")
+			validation.append(f"{self.name} must be string")
 
 		return validation
 
