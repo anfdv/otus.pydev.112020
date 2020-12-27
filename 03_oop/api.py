@@ -36,6 +36,16 @@ GENDERS = {
 
 
 class CharField(abc.ABC):
+	""" Field descriptor base class, calls validate before value is set.
+Write validation errors in parents validation attribute
+
+	Args:
+		required (bool): field required
+		nullable (bool): field can me None
+		default: default value when field is not set
+
+	"""
+
 	def __init__(self, required=False, nullable=True, default=None):
 		self.required = required
 		self.nullable = nullable
@@ -63,14 +73,11 @@ class CharField(abc.ABC):
 		setattr(instance, 'validation', validations)
 
 		set_default = value is None and self.default is not None
-		# print(value, self.default, value is None, self.default is not None, set_default)
-
 		setattr(instance, self.name, self.default if set_default else value)
-
-		# print('setted', self.name, value, getattr(instance, self.name))
 
 
 class FieldsValidation(abc.ABC):
+	""" Validations descriptor, append incoming validation errors to existing list"""
 	def __init__(self):
 		self.name = None
 
@@ -83,19 +90,13 @@ class FieldsValidation(abc.ABC):
 		self.name = f"_{name}"
 
 	def __set__(self, instance, value):
-
 		if not hasattr(instance, self.name):
 			val = list()
 		else:
 			val = getattr(instance, self.name)
 
-		# print(val, value)
 		val += value
 		setattr(instance, self.name, val)
-		# print('validations setted', instance, getattr(instance, self.name))
-
-
-
 
 
 class ArgumentsField(CharField):
@@ -122,8 +123,6 @@ class NameField(CharField):
 		return validation
 
 
-
-
 class EmailField(CharField):
 	def validate(self, value):
 		validation = super(self.__class__, self).validate(value)
@@ -134,6 +133,7 @@ class EmailField(CharField):
 			validation.append(f"{self.name} must contain @")
 
 		return validation
+
 
 class PhoneField(CharField):
 	def validate(self, value):
@@ -163,6 +163,7 @@ class BirthDayField(CharField):
 
 		return validation
 
+
 class GenderField(CharField):
 	def validate(self, value):
 		validation = super(self.__class__, self).validate(value)
@@ -174,6 +175,7 @@ class GenderField(CharField):
 			validation.append(f"wrong {self.name} value")
 
 		return validation
+
 
 class ClientIDsField(CharField):
 	def validate(self, value):
@@ -190,6 +192,7 @@ class ClientIDsField(CharField):
 				validation.append(f"{self.name} not all values are integers")
 
 		return validation
+
 
 class DateField(CharField):
 	def validate(self, value):
@@ -219,9 +222,11 @@ class ClientsInterestsRequest(object):
 			resp[cid] = scoring.get_interests(method.store, cid)
 		return resp, OK
 
+	def update_context(self):
+		self.nclients = len(self.client_ids)
+
 	def validate(self):
 		if self.client_ids is not None:
-			self.nclients = len(self.client_ids)
 			return True
 		else:
 			return False
@@ -250,7 +255,7 @@ class OnlineScoreRequest(object):
 		if method.is_admin:
 			score = 42
 		else:
-			args = {
+			params = {
 				'store': method.store,
 				'phone': self.phone,
 				'email': self.email,
@@ -259,21 +264,21 @@ class OnlineScoreRequest(object):
 				'first_name': self.first_name,
 				'last_name': self.last_name
 			}
-			score = scoring.get_score(**args)
+			score = scoring.get_score(**params)
 		return {'score': score}, OK
 
-	def validate(self):
+	def update_context(self):
 		for field in self.fields:
 			attr = getattr(self, field)
 			if attr is not None:
 				self.has.append(field)
 
+	def validate(self):
 		check = (
 			self.phone is not None and self.email is not None,
 			self.first_name is not None and self.last_name is not None,
 			self.gender is not None and self.birthday is not None
 		)
-		# print(check, self.has)
 		return any(check)
 
 
@@ -304,8 +309,10 @@ class MethodRequest(object):
 				return ERRORS[INVALID_REQUEST], INVALID_REQUEST
 
 			if runner.validation:
+				logging.debug(f"invalid arguments: {runner.validation}")
 				return '\n'.join(runner.validation), INVALID_REQUEST
 
+			runner.update_context()
 			if self.method == 'online_score':
 				self.ctx['has'] = runner.has
 			elif self.method == 'clients_interests':
@@ -315,6 +322,7 @@ class MethodRequest(object):
 		else:
 			return ERRORS[INTERNAL_ERROR], INTERNAL_ERROR
 
+
 def check_auth(request):
 	if request.is_admin:
 		data = datetime.datetime.now().strftime("%Y%m%d%H") + ADMIN_SALT
@@ -322,16 +330,12 @@ def check_auth(request):
 		data = request.account + request.login + SALT
 
 	digest = hashlib.sha512(data.encode()).hexdigest()
-	# print('login', data, digest, request.token)
 	if digest == request.token:
 		return True
 	return False
 
 
 def method_handler(request, ctx, store):
-	# print(f"request {request}")
-	# print(f"ctx {ctx}")
-	# print(f"store {store}")
 	runner = None
 	base = MethodRequest(ctx=ctx, store=store, **request['body'])
 
@@ -341,13 +345,14 @@ def method_handler(request, ctx, store):
 		runner = ClientsInterestsRequest(**base.arguments if base.arguments is not None else dict())
 
 	if base.validation:
+		logging.debug(f"invalid request parameters: {base.validation}")
 		return '\n'.join(base.validation), INVALID_REQUEST
 
 	if not check_auth(base):
+		logging.warning(f"forbidden request from {base.account}/{base.login}, token: {base.token}")
 		return ERRORS[FORBIDDEN], FORBIDDEN
 
 	return base.handler(runner)
-
 
 
 class MainHTTPHandler(BaseHTTPRequestHandler):
@@ -380,7 +385,8 @@ class MainHTTPHandler(BaseHTTPRequestHandler):
 					code = INTERNAL_ERROR
 			else:
 				code = NOT_FOUND
-		logging.info(f"response: {response}, code: {code}")
+
+		logging.debug(f"response: {response}, code: {code}")
 
 		self.send_response(code)
 		self.send_header("Content-Type", "application/json")
@@ -392,7 +398,6 @@ class MainHTTPHandler(BaseHTTPRequestHandler):
 		context.update(r)
 		logging.info(context)
 		self.wfile.write(json.dumps(r).encode())
-		return
 
 
 if __name__ == "__main__":
