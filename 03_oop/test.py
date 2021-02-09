@@ -114,11 +114,11 @@ class TestSuite(unittest.TestCase):
 
 	@cases([
 		{},
-		# {"date": "20.07.2017"},
-		# {"client_ids": [], "date": "20.07.2017"},
-		# {"client_ids": {1: 2}, "date": "20.07.2017"},
-		# {"client_ids": ["1", "2"], "date": "20.07.2017"},
-		# {"client_ids": [1, 2], "date": "XXX"},
+		{"date": "20.07.2017"},
+		{"client_ids": [], "date": "20.07.2017"},
+		{"client_ids": {1: 2}, "date": "20.07.2017"},
+		{"client_ids": ["1", "2"], "date": "20.07.2017"},
+		{"client_ids": [1, 2], "date": "XXX"},
 	])
 	def test_invalid_interests_request(self, arguments):
 		request = {"account": "horns&hoofs", "login": "h&f", "method": "clients_interests", "arguments": arguments}
