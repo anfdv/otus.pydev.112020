@@ -1,3 +1,4 @@
+import abc
 import json
 import datetime
 import logging
@@ -7,8 +8,6 @@ from optparse import OptionParser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import scoring
 
-import traceback
-import sys
 
 SALT = "Otus"
 ADMIN_LOGIN = "admin"
@@ -36,7 +35,7 @@ GENDERS = {
 }
 
 
-class CharField():
+class CharField(abc.ABC):
 	""" Field descriptor base class, calls validate before value is set.
 Write validation errors in parents validation attribute
 
@@ -52,172 +51,195 @@ Write validation errors in parents validation attribute
 		self.nullable = nullable
 		self.default = default
 		self.name = None
-		self.desc_name = None
 
 	def __get__(self, instance, owner):
 		return getattr(instance, self.name)
 
 	def __set_name__(self, owner, name):
-		self.desc_name = name
 		self.name = f"_{name}"
 
 	def validate(self, value):
-		if all((value is None, self.required and not self.nullable)):
-			raise ValueError(f"required value {self.desc_name} is not set")
+		return list()
 
 	def __set__(self, instance, value):
-		self.validate(value)
-		setattr(instance, self.name, value)
+		validations = list()
+
+		if value is None:
+			if self.required or not self.nullable:
+				validations.append(f"required value {self.name} is not set")
+		else:
+			validations += self.validate(value)
+
+		setattr(instance, 'validation', validations)
+
+		set_default = value is None and self.default is not None
+		setattr(instance, self.name, self.default if set_default else value)
+
+
+class FieldsValidation(abc.ABC):
+	""" Validations descriptor, append incoming validation errors to existing list"""
+	def __init__(self):
+		self.name = None
+
+	def __get__(self, instance, owner):
+		if not hasattr(instance, self.name):
+			return list()
+		return getattr(instance, self.name)
+
+	def __set_name__(self, owner, name):
+		self.name = f"_{name}"
+
+	def __set__(self, instance, value):
+		if not hasattr(instance, self.name):
+			val = list()
+		else:
+			val = getattr(instance, self.name)
+
+		val += value
+		setattr(instance, self.name, val)
 
 
 class ArgumentsField(CharField):
 	def validate(self, value):
-		super(ArgumentsField, self).validate(value)
-
-		if not value:
-			return
-
+		validation = super(self.__class__, self).validate(value)
 		if isinstance(value, str):
 			try:
 				json.loads(value)
 			except json.decoder.JSONDecodeError as e:
-				raise ValueError(f"cant convert {self.desc_name} to json: {e}")
+				validation.append(f"cant convert {self.name} to json: {e}")
 
 		if not isinstance(value, dict):
-			raise ValueError(f"wrong type of {self.desc_name}: {type(value)}")
+			validation.append(f"wrong type of {self.name}: {type(value)}")
+		return validation
 
 
 class NameField(CharField):
 	def validate(self, value):
-		super(NameField, self).validate(value)
-
-		if not value:
-			return
+		validation = super(self.__class__, self).validate(value)
 
 		if not isinstance(value, str):
-			raise ValueError(f"{self.desc_name} must be string")
+			validation.append(f"{self.name} must be string")
 
+		return validation
 
 
 class EmailField(CharField):
 	def validate(self, value):
-		super(EmailField, self).validate(value)
-
-		if not value:
-			return
+		validation = super(self.__class__, self).validate(value)
 
 		if not isinstance(value, str):
-			raise ValueError(f"{self.desc_name} must be string")
+			validation.append(f"{self.name} must be string")
 		if '@' not in value:
-			raise ValueError(f"{self.desc_name} must contain @")
+			validation.append(f"{self.name} must contain @")
 
+		return validation
 
 
 class PhoneField(CharField):
 	def validate(self, value):
-		super(PhoneField, self).validate(value)
-
-		if not value:
-			return
+		validation = super(self.__class__, self).validate(value)
 
 		if not isinstance(value, (str, int)):
-			raise ValueError(f"wrong phone type: {type(value)}")
+			validation.append(f"wrong phone type: {type(value)}")
 		if len(str(value)) != 11:
-			raise ValueError(f"strange phone number")
+			validation.append(f"strange phone number")
 		if str(value)[0] != '7':
-			raise ValueError(f"wrong phone code")
+			validation.append(f"wrong phone code")
+
+		return validation
 
 
+class BirthDayField(CharField):
+	def validate(self, value):
+		validation = super(self.__class__, self).validate(value)
 
+		try:
+			_dt = datetime.datetime.strptime(value, '%d.%m.%Y')
+			now = datetime.datetime.now()
+			if _dt < datetime.datetime(now.year - 70, now.month, now.day):
+				validation.append("well, you are too old for this")
+		except ValueError as e:
+			validation.append(f"cant parse date {value}, {e}")
+
+		return validation
 
 
 class GenderField(CharField):
 	def validate(self, value):
-		super(GenderField, self).validate(value)
-
-		if not value:
-			return
+		validation = super(self.__class__, self).validate(value)
 
 		if not isinstance(value, int):
-			raise ValueError(f"{self.desc_name} must be int")
+			validation.append(f"{self.name} must be int")
 
 		if value not in (0, 1, 2):
-			raise ValueError(f"wrong {self.desc_name} value")
+			validation.append(f"wrong {self.name} value")
 
+		return validation
 
 
 class ClientIDsField(CharField):
 	def validate(self, value):
-		super(ClientIDsField, self).validate(value)
+		validation = super(self.__class__, self).validate(value)
 
 		if not isinstance(value, list):
-			raise ValueError(f"{self.desc_name} must be an array")
+			validation.append(f"{self.name} must be an array")
 		else:
 
 			if len(value) == 0:
-				raise ValueError(f"{self.desc_name} cannot be empty")
+				validation.append(f"{self.name} cannot be empty")
 
 			if not all((isinstance(xx, int) for xx in value)):
-				raise ValueError(f"{self.desc_name} not all values are integers")
+				validation.append(f"{self.name} not all values are integers")
 
+		return validation
 
 
 class DateField(CharField):
 	def validate(self, value):
-		super(DateField, self).validate(value)
-
-		if not value:
-			return
+		validation = super(self.__class__, self).validate(value)
 
 		try:
 			datetime.datetime.strptime(value, '%d.%m.%Y')
 		except ValueError as e:
-			raise ValueError(f"cant parse date {value}, {e}")
+			validation.append(f"cant parse date {value}, {e}")
+
+		return validation
 
 
-class BirthDayField(DateField):
-	def validate(self, value):
-		super(BirthDayField, self).validate(value)
-
-		if not value:
-			return
-
-		_dt = datetime.datetime.strptime(value, '%d.%m.%Y')
-		now = datetime.datetime.now()
-		if _dt < datetime.datetime(now.year - 70, now.month, now.day):
-			raise ValueError("well, you are too old for this")
-
-
-class ClientsInterestsRequest:
+class ClientsInterestsRequest(object):
 	client_ids = ClientIDsField(required=True)
 	date = DateField(required=False, nullable=True)
+	validation = FieldsValidation()
 
 	def __init__(self, client_ids=None, date=None):
 		self.client_ids = client_ids
 		self.date = date
 		self.nclients = 0
 
-	def update_context(self, ctx):
-		ctx['nclients'] = len(self.client_ids)
-
-	def validate(self):
-		return True
-
-	@staticmethod
-	def post(arguments, store):
+	def post(self, method):
 		resp = dict()
-		for cid in arguments.get('client_ids', []):
-			resp[cid] = scoring.get_interests(store, cid)
+		for cid in self.client_ids:
+			resp[cid] = scoring.get_interests(method.store, cid)
 		return resp, OK
 
+	def update_context(self):
+		self.nclients = len(self.client_ids)
 
-class OnlineScoreRequest:
+	def validate(self):
+		if self.client_ids is not None:
+			return True
+		else:
+			return False
+
+
+class OnlineScoreRequest(object):
 	first_name = NameField(required=False, nullable=True)
 	last_name = NameField(required=False, nullable=True)
 	email = EmailField(required=False, nullable=True)
 	phone = PhoneField(required=False, nullable=True)
 	birthday = BirthDayField(required=False, nullable=True)
 	gender = GenderField(required=False, nullable=True)
+	validation = FieldsValidation()
 
 	def __init__(self, first_name=None, last_name=None, email=None, phone=None, birthday=None, gender=None):
 		self.first_name = first_name
@@ -226,16 +248,30 @@ class OnlineScoreRequest:
 		self.phone = phone
 		self.birthday = birthday
 		self.gender = gender
+		self.fields = ('first_name', 'last_name', 'email', 'phone', 'birthday', 'gender')
+		self.has = list()
 
+	def post(self, method):
+		if method.is_admin:
+			score = 42
+		else:
+			params = {
+				'store': method.store,
+				'phone': self.phone,
+				'email': self.email,
+				'birthday': self.birthday,
+				'gender': self.gender,
+				'first_name': self.first_name,
+				'last_name': self.last_name
+			}
+			score = scoring.get_score(**params)
+		return {'score': score}, OK
 
-	def update_context(self, ctx):
-		fields = ('first_name', 'last_name', 'email', 'phone', 'birthday', 'gender')
-		has = list()
-		for field in fields:
+	def update_context(self):
+		for field in self.fields:
 			attr = getattr(self, field)
 			if attr is not None:
-				has.append(field)
-		ctx['has'] = has
+				self.has.append(field)
 
 	def validate(self):
 		check = (
@@ -243,51 +279,55 @@ class OnlineScoreRequest:
 			self.first_name is not None and self.last_name is not None,
 			self.gender is not None and self.birthday is not None
 		)
-		if not any(check):
-			raise ValueError(f"required value pairs is not set")
-
-	@staticmethod
-	def post(is_admin, arguments, store):
-		if is_admin:
-			score = 42
-		else:
-			params = {
-				'store': store,
-				'phone': arguments.get('phone', ''),
-				'email': arguments.get('email', ''),
-				'birthday': arguments.get('birthday', ''),
-				'gender': arguments.get('gender', ''),
-				'first_name': arguments.get('first_name', ''),
-				'last_name': arguments.get('last_name', '')
-			}
-			score = scoring.get_score(**params)
-		return {'score': score}, OK
+		return any(check)
 
 
-class MethodRequest:
+class MethodRequest(object):
 	account = CharField(required=False, nullable=True, default='')
 	login = CharField(required=True, nullable=True, default='')
 	token = CharField(required=True, nullable=True)
 	arguments = ArgumentsField(required=True, nullable=True)
 	method = CharField(required=True, nullable=False)
+	validation = FieldsValidation()
 
-	def __init__(self, account=None, login=None, token=None, arguments=None, method=None):
+	def __init__(self, account=None, login=None, token=None, arguments=None, method=None, ctx=None, store=None):
 		self.account = account
 		self.login = login
 		self.token = token
-		self.arguments = arguments or dict()
+		self.arguments = arguments
 		self.method = method
+		self.ctx = ctx
+		self.store = store
 
 	@property
 	def is_admin(self):
 		return self.login == ADMIN_LOGIN
+
+	def handler(self, runner):
+		if runner is not None:
+			if not runner.validate():
+				return ERRORS[INVALID_REQUEST], INVALID_REQUEST
+
+			if runner.validation:
+				logging.debug(f"invalid arguments: {runner.validation}")
+				return '\n'.join(runner.validation), INVALID_REQUEST
+
+			runner.update_context()
+			if self.method == 'online_score':
+				self.ctx['has'] = runner.has
+			elif self.method == 'clients_interests':
+				self.ctx['nclients'] = runner.nclients
+
+			return runner.post(self)
+		else:
+			return ERRORS[INTERNAL_ERROR], INTERNAL_ERROR
 
 
 def check_auth(request):
 	if request.is_admin:
 		data = datetime.datetime.now().strftime("%Y%m%d%H") + ADMIN_SALT
 	else:
-		data = "{}{}{}".format(request.account or '', request.login or '', SALT)
+		data = request.account + request.login + SALT
 
 	digest = hashlib.sha512(data.encode()).hexdigest()
 	if digest == request.token:
@@ -296,43 +336,23 @@ def check_auth(request):
 
 
 def method_handler(request, ctx, store):
-	try:
-		base = MethodRequest(**request['body'])
+	runner = None
+	base = MethodRequest(ctx=ctx, store=store, **request['body'])
 
-		if not check_auth(base):
-			logging.warning(f"forbidden request from {base.account}/{base.login}, token: {base.token}")
-			return ERRORS[FORBIDDEN], FORBIDDEN
+	if base.method == 'online_score':
+		runner = OnlineScoreRequest(**base.arguments if base.arguments is not None else dict())
+	elif base.method == 'clients_interests':
+		runner = ClientsInterestsRequest(**base.arguments if base.arguments is not None else dict())
 
-		methods = {
-			'online_score': {
-				'cls': OnlineScoreRequest,
-				'request': {'func': OnlineScoreRequest.post, 'args': (base.is_admin, base.arguments, store)}
-			},
-			'clients_interests': {
-				'cls': ClientsInterestsRequest,
-				'request': {'func': ClientsInterestsRequest.post, 'args': (base.arguments, store)}
-			}
-		}
+	if base.validation:
+		logging.debug(f"invalid request parameters: {base.validation}")
+		return '\n'.join(base.validation), INVALID_REQUEST
 
-		if base.method in methods:
-			method = methods[base.method]
-			runner = method['cls'](**base.arguments)
-			runner.validate()
-			runner.update_context(ctx)
+	if not check_auth(base):
+		logging.warning(f"forbidden request from {base.account}/{base.login}, token: {base.token}")
+		return ERRORS[FORBIDDEN], FORBIDDEN
 
-			request = method['request']
-			return request['func'](*request['args'])
-
-		return ERRORS[NOT_FOUND], NOT_FOUND
-	except ValueError as e:
-		return str(e), INVALID_REQUEST
-	except Exception as e:
-		logging.exception("Unexpected error: %s" % e)
-		return ERRORS[INTERNAL_ERROR], INTERNAL_ERROR
-
-
-
-
+	return base.handler(runner)
 
 
 class MainHTTPHandler(BaseHTTPRequestHandler):

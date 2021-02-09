@@ -163,13 +163,16 @@ LastLog = namedtuple('LastLog', ('file', 'dt'))
 def last_log(path):
 	pattern = r'nginx-access-ui.log-(\d{8})(\.gz|)\Z'
 	last = None
-	
+	matcher = re.compile(pattern)
 	for name in iter(os.listdir(path)):
-		matched = re.compile(pattern).match(name)
-		if matched is not None:
-			file_dt = datetime.strptime(matched.group(1), '%Y%m%d')
-			if last is None or last.dt < file_dt:
-				last = LastLog(os.path.join(path, name), file_dt)
+		is_matched = matcher.match(name)
+		if is_matched is not None:
+			try:
+				file_dt = datetime.strptime(is_matched.group(1), '%Y%m%d')
+				if last is None or last.dt < file_dt:
+					last = LastLog(os.path.join(path, name), file_dt)
+			except ValueError:
+				logging.exception(f"cant parse date {is_matched.group(1)}", exc_info=True)
 	
 	return last
 	
