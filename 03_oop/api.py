@@ -1,3 +1,4 @@
+from functools import partial
 import json
 import datetime
 import logging
@@ -47,10 +48,9 @@ Write validation errors in parents validation attribute
 
 	"""
 
-	def __init__(self, required=False, nullable=True, default=None):
+	def __init__(self, required=False, nullable=False):
 		self.required = required
 		self.nullable = nullable
-		self.default = default
 		self.name = None
 		self.desc_name = None
 
@@ -61,22 +61,20 @@ Write validation errors in parents validation attribute
 		self.desc_name = name
 		self.name = f"_{name}"
 
-	def validate(self, value):
-		if all((value is None, self.required and not self.nullable)):
-			raise ValueError(f"required value {self.desc_name} is not set")
+	def validation(self, value):
+		return
 
 	def __set__(self, instance, value):
-		self.validate(value)
+		if all((value is None, self.required and not self.nullable)):
+			raise ValueError(f"required value {self.desc_name} is not set")
+		pass_validation = not value and self.nullable
+		if not pass_validation:
+			self.validation(value)
 		setattr(instance, self.name, value)
 
 
 class ArgumentsField(CharField):
-	def validate(self, value):
-		super(ArgumentsField, self).validate(value)
-
-		if not value:
-			return
-
+	def validation(self, value):
 		if isinstance(value, str):
 			try:
 				json.loads(value)
@@ -86,26 +84,19 @@ class ArgumentsField(CharField):
 		if not isinstance(value, dict):
 			raise ValueError(f"wrong type of {self.desc_name}: {type(value)}")
 
+	def __set__(self, instance, value):
+		setattr(instance, self.name, value or dict())
+
 
 class NameField(CharField):
-	def validate(self, value):
-		super(NameField, self).validate(value)
-
-		if not value:
-			return
-
+	def validation(self, value):
 		if not isinstance(value, str):
 			raise ValueError(f"{self.desc_name} must be string")
 
 
 
 class EmailField(CharField):
-	def validate(self, value):
-		super(EmailField, self).validate(value)
-
-		if not value:
-			return
-
+	def validation(self, value):
 		if not isinstance(value, str):
 			raise ValueError(f"{self.desc_name} must be string")
 		if '@' not in value:
@@ -114,12 +105,7 @@ class EmailField(CharField):
 
 
 class PhoneField(CharField):
-	def validate(self, value):
-		super(PhoneField, self).validate(value)
-
-		if not value:
-			return
-
+	def validation(self, value):
 		if not isinstance(value, (str, int)):
 			raise ValueError(f"wrong phone type: {type(value)}")
 		if len(str(value)) != 11:
@@ -132,12 +118,7 @@ class PhoneField(CharField):
 
 
 class GenderField(CharField):
-	def validate(self, value):
-		super(GenderField, self).validate(value)
-
-		if not value:
-			return
-
+	def validation(self, value):
 		if not isinstance(value, int):
 			raise ValueError(f"{self.desc_name} must be int")
 
@@ -147,13 +128,10 @@ class GenderField(CharField):
 
 
 class ClientIDsField(CharField):
-	def validate(self, value):
-		super(ClientIDsField, self).validate(value)
-
+	def validation(self, value):
 		if not isinstance(value, list):
 			raise ValueError(f"{self.desc_name} must be an array")
 		else:
-
 			if len(value) == 0:
 				raise ValueError(f"{self.desc_name} cannot be empty")
 
@@ -163,12 +141,7 @@ class ClientIDsField(CharField):
 
 
 class DateField(CharField):
-	def validate(self, value):
-		super(DateField, self).validate(value)
-
-		if not value:
-			return
-
+	def validation(self, value):
 		try:
 			datetime.datetime.strptime(value, '%d.%m.%Y')
 		except ValueError as e:
@@ -176,42 +149,47 @@ class DateField(CharField):
 
 
 class BirthDayField(DateField):
-	def validate(self, value):
-		super(BirthDayField, self).validate(value)
-
-		if not value:
-			return
-
+	def validation(self, value):
+		super(BirthDayField, self).validation(value)
 		_dt = datetime.datetime.strptime(value, '%d.%m.%Y')
 		now = datetime.datetime.now()
 		if _dt < datetime.datetime(now.year - 70, now.month, now.day):
 			raise ValueError("well, you are too old for this")
 
 
-class ClientsInterestsRequest:
+class Request:
+	fields = list()
+
+	def __init__(self, **kwargs):
+		for field in self.fields:
+			setattr(self, field, kwargs.get(field, None))
+		self.validate()
+
+	def update_context(self, ctx):
+		return
+
+	def validate(self):
+		return
+
+
+class ClientsInterestsRequest(Request):
+	fields = ['client_ids', 'date']
 	client_ids = ClientIDsField(required=True)
 	date = DateField(required=False, nullable=True)
-
-	def __init__(self, client_ids=None, date=None):
-		self.client_ids = client_ids
-		self.date = date
-		self.nclients = 0
 
 	def update_context(self, ctx):
 		ctx['nclients'] = len(self.client_ids)
 
-	def validate(self):
-		return True
 
-	@staticmethod
-	def post(arguments, store):
-		resp = dict()
-		for cid in arguments.get('client_ids', []):
-			resp[cid] = scoring.get_interests(store, cid)
-		return resp, OK
+def clients_interests_handler(arguments, store):
+	resp, status = dict(), OK
+	for cid in arguments.get('client_ids', []):
+		resp[cid] = scoring.get_interests(store, cid)
+	return resp, status
 
 
-class OnlineScoreRequest:
+class OnlineScoreRequest(Request):
+	fields = ['first_name', 'last_name', 'email', 'phone', 'birthday', 'gender']
 	first_name = NameField(required=False, nullable=True)
 	last_name = NameField(required=False, nullable=True)
 	email = EmailField(required=False, nullable=True)
@@ -219,25 +197,16 @@ class OnlineScoreRequest:
 	birthday = BirthDayField(required=False, nullable=True)
 	gender = GenderField(required=False, nullable=True)
 
-	def __init__(self, first_name=None, last_name=None, email=None, phone=None, birthday=None, gender=None):
-		self.first_name = first_name
-		self.last_name = last_name
-		self.email = email
-		self.phone = phone
-		self.birthday = birthday
-		self.gender = gender
-
-
 	def update_context(self, ctx):
-		fields = ('first_name', 'last_name', 'email', 'phone', 'birthday', 'gender')
 		has = list()
-		for field in fields:
+		for field in self.fields:
 			attr = getattr(self, field)
 			if attr is not None:
 				has.append(field)
 		ctx['has'] = has
 
 	def validate(self):
+		super(OnlineScoreRequest, self).validate()
 		check = (
 			self.phone is not None and self.email is not None,
 			self.first_name is not None and self.last_name is not None,
@@ -246,37 +215,33 @@ class OnlineScoreRequest:
 		if not any(check):
 			raise ValueError(f"required value pairs is not set")
 
-	@staticmethod
-	def post(is_admin, arguments, store):
-		if is_admin:
-			score = 42
-		else:
-			params = {
-				'store': store,
-				'phone': arguments.get('phone', ''),
-				'email': arguments.get('email', ''),
-				'birthday': arguments.get('birthday', ''),
-				'gender': arguments.get('gender', ''),
-				'first_name': arguments.get('first_name', ''),
-				'last_name': arguments.get('last_name', '')
-			}
-			score = scoring.get_score(**params)
-		return {'score': score}, OK
+
+def online_score_handler(is_admin, arguments, store):
+	resp, status = {'score': None}, OK
+	if is_admin:
+		resp['score'] = 42
+	else:
+		params = {
+			'store': store,
+			'phone': arguments.get('phone', ''),
+			'email': arguments.get('email', ''),
+			'birthday': arguments.get('birthday', ''),
+			'gender': arguments.get('gender', ''),
+			'first_name': arguments.get('first_name', ''),
+			'last_name': arguments.get('last_name', '')
+		}
+		resp['score'] = scoring.get_score(**params)
+	return resp, status
 
 
-class MethodRequest:
-	account = CharField(required=False, nullable=True, default='')
-	login = CharField(required=True, nullable=True, default='')
+
+class MethodRequest(Request):
+	fields = ['account', 'login', 'token', 'arguments', 'method']
+	account = CharField(required=False, nullable=True)
+	login = CharField(required=True, nullable=True)
 	token = CharField(required=True, nullable=True)
 	arguments = ArgumentsField(required=True, nullable=True)
 	method = CharField(required=True, nullable=False)
-
-	def __init__(self, account=None, login=None, token=None, arguments=None, method=None):
-		self.account = account
-		self.login = login
-		self.token = token
-		self.arguments = arguments or dict()
-		self.method = method
 
 	@property
 	def is_admin(self):
@@ -306,25 +271,24 @@ def method_handler(request, ctx, store):
 		methods = {
 			'online_score': {
 				'cls': OnlineScoreRequest,
-				'request': {'func': OnlineScoreRequest.post, 'args': (base.is_admin, base.arguments, store)}
+				'handler': (online_score_handler, base.is_admin, base.arguments, store)
 			},
 			'clients_interests': {
 				'cls': ClientsInterestsRequest,
-				'request': {'func': ClientsInterestsRequest.post, 'args': (base.arguments, store)}
+				'handler': (clients_interests_handler, base.arguments, store)
 			}
 		}
 
 		if base.method in methods:
 			method = methods[base.method]
 			runner = method['cls'](**base.arguments)
-			runner.validate()
 			runner.update_context(ctx)
 
-			request = method['request']
-			return request['func'](*request['args'])
+			return partial(*method['handler'])()
 
 		return ERRORS[NOT_FOUND], NOT_FOUND
 	except ValueError as e:
+		logging.error(f"INVALID_REQUEST: {json.dumps(request['body'])}")
 		return str(e), INVALID_REQUEST
 	except Exception as e:
 		logging.exception("Unexpected error: %s" % e)
