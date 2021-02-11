@@ -1,4 +1,3 @@
-from functools import partial
 import json
 import datetime
 import logging
@@ -80,7 +79,6 @@ class ArgumentsField(CharField):
 				json.loads(value)
 			except json.decoder.JSONDecodeError as e:
 				raise ValueError(f"cant convert {self.desc_name} to json: {e}")
-
 		if not isinstance(value, dict):
 			raise ValueError(f"wrong type of {self.desc_name}: {type(value)}")
 
@@ -94,14 +92,12 @@ class NameField(CharField):
 			raise ValueError(f"{self.desc_name} must be string")
 
 
-
 class EmailField(CharField):
 	def validation(self, value):
 		if not isinstance(value, str):
 			raise ValueError(f"{self.desc_name} must be string")
 		if '@' not in value:
 			raise ValueError(f"{self.desc_name} must contain @")
-
 
 
 class PhoneField(CharField):
@@ -114,17 +110,12 @@ class PhoneField(CharField):
 			raise ValueError(f"wrong phone code")
 
 
-
-
-
 class GenderField(CharField):
 	def validation(self, value):
 		if not isinstance(value, int):
 			raise ValueError(f"{self.desc_name} must be int")
-
 		if value not in (0, 1, 2):
 			raise ValueError(f"wrong {self.desc_name} value")
-
 
 
 class ClientIDsField(CharField):
@@ -134,10 +125,8 @@ class ClientIDsField(CharField):
 		else:
 			if len(value) == 0:
 				raise ValueError(f"{self.desc_name} cannot be empty")
-
 			if not all((isinstance(xx, int) for xx in value)):
 				raise ValueError(f"{self.desc_name} not all values are integers")
-
 
 
 class DateField(CharField):
@@ -181,9 +170,9 @@ class ClientsInterestsRequest(Request):
 		ctx['nclients'] = len(self.client_ids)
 
 
-def clients_interests_handler(arguments, store):
+def clients_interests_handler(request, store):
 	resp, status = dict(), OK
-	for cid in arguments.get('client_ids', []):
+	for cid in request.arguments.get('client_ids', []):
 		resp[cid] = scoring.get_interests(store, cid)
 	return resp, status
 
@@ -216,23 +205,22 @@ class OnlineScoreRequest(Request):
 			raise ValueError(f"required value pairs is not set")
 
 
-def online_score_handler(is_admin, arguments, store):
+def online_score_handler(request, store):
 	resp, status = {'score': None}, OK
-	if is_admin:
+	if request.is_admin:
 		resp['score'] = 42
 	else:
 		params = {
 			'store': store,
-			'phone': arguments.get('phone', ''),
-			'email': arguments.get('email', ''),
-			'birthday': arguments.get('birthday', ''),
-			'gender': arguments.get('gender', ''),
-			'first_name': arguments.get('first_name', ''),
-			'last_name': arguments.get('last_name', '')
+			'phone': request.arguments.get('phone', ''),
+			'email': request.arguments.get('email', ''),
+			'birthday': request.arguments.get('birthday', ''),
+			'gender': request.arguments.get('gender', ''),
+			'first_name': request.arguments.get('first_name', ''),
+			'last_name': request.arguments.get('last_name', '')
 		}
 		resp['score'] = scoring.get_score(**params)
 	return resp, status
-
 
 
 class MethodRequest(Request):
@@ -269,14 +257,8 @@ def method_handler(request, ctx, store):
 			return ERRORS[FORBIDDEN], FORBIDDEN
 
 		methods = {
-			'online_score': {
-				'cls': OnlineScoreRequest,
-				'handler': (online_score_handler, base.is_admin, base.arguments, store)
-			},
-			'clients_interests': {
-				'cls': ClientsInterestsRequest,
-				'handler': (clients_interests_handler, base.arguments, store)
-			}
+			'online_score': {'cls': OnlineScoreRequest, 'handler': online_score_handler, },
+			'clients_interests': {'cls': ClientsInterestsRequest, 'handler': clients_interests_handler, }
 		}
 
 		if base.method in methods:
@@ -284,7 +266,7 @@ def method_handler(request, ctx, store):
 			runner = method['cls'](**base.arguments)
 			runner.update_context(ctx)
 
-			return partial(*method['handler'])()
+			return method['handler'](base, store)
 
 		return ERRORS[NOT_FOUND], NOT_FOUND
 	except ValueError as e:
@@ -293,10 +275,6 @@ def method_handler(request, ctx, store):
 	except Exception as e:
 		logging.exception("Unexpected error: %s" % e)
 		return ERRORS[INTERNAL_ERROR], INTERNAL_ERROR
-
-
-
-
 
 
 class MainHTTPHandler(BaseHTTPRequestHandler):
